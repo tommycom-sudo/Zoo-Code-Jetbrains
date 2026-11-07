@@ -8,7 +8,6 @@ import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.editor.Document
 import com.intellij.openapi.editor.Editor
-import com.intellij.openapi.editor.LogicalPosition
 import com.intellij.openapi.editor.ScrollType
 import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.fileEditor.FileEditor
@@ -130,11 +129,37 @@ class EditorHolder(
             }
         }
 
+        private fun navigationEditor(): Editor? =
+            (ideaEditor as? TextEditor)?.editor ?: stateManager.getIdeaDiffEditor(document.uri)?.get()
+
+        fun setSelections(selections: List<Selection>, reveal: Boolean = false) {
+            if (selections.isEmpty()) return
+            ApplicationManager.getApplication().invokeAndWait {
+                val editor = navigationEditor() ?: return@invokeAndWait
+                if (editor.isDisposed) return@invokeAndWait
+                editor.caretModel.runBatchCaretOperation {
+                    editor.caretModel.removeSecondaryCarets()
+                    selections.forEachIndexed { index, selection ->
+                        val start = navigationOffset(editor.document, selection.selectionStartLineNumber, selection.selectionStartColumn)
+                        val end = navigationOffset(editor.document, selection.positionLineNumber, selection.positionColumn)
+                        val caret = if (index == 0) editor.caretModel.primaryCaret else
+                            editor.caretModel.addCaret(editor.offsetToVisualPosition(end)) ?: return@forEachIndexed
+                        caret.moveToOffset(end)
+                        if (start == end) caret.removeSelection() else caret.setSelection(min(start, end), max(start, end))
+                    }
+                }
+                if (reveal) editor.scrollingModel.scrollToCaret(ScrollType.CENTER)
+            }
+            updateSelections(selections)
+        }
+
         fun revealRange(range: Range) {
             state.visibleRanges = listOf(range)
-            stateManager.getIdeaDiffEditor(document.uri)?.get()?.let {e->
-                ApplicationManager.getApplication().invokeLater{
-                    val target = LogicalPosition(range.startLineNumber,0)
+            ApplicationManager.getApplication().invokeLater {
+                navigationEditor()?.let { e ->
+                    if (e.isDisposed) return@invokeLater
+                    val offset = navigationOffset(e.document, range.startLineNumber, range.startColumn)
+                    val target = e.offsetToLogicalPosition(offset)
                     e.scrollingModel.scrollTo(target, ScrollType.RELATIVE)
                 }
             }

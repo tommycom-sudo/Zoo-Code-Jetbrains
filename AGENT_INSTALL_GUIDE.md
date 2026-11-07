@@ -110,6 +110,22 @@ java.net.SocketException: Connection reset
 - 工具审批
 - 完整聊天 Webview
 
+### 2.5 聊天链接定位到代码行（2026-11-07 补充）
+
+支持点击聊天中的 `[方法名](相对路径/File.java:118)` 后打开文件、将光标定位到第 118 行并居中滚动。文件首次打开与已经打开时均应用目标位置；旧链接的行号或列号超出文件范围时，会收敛到文件或行尾。
+
+此次修复在 JetBrains 编辑器适配层处理 `showTextDocument` 的 `selection`，并实现后续设置选区的 RPC；无需修改 Agent 生成链接的格式。同时修复普通编辑器的范围滚动及协议坐标转换（协议行列从 1 开始，IDEA 索引从 0 开始）。
+
+本次新增安装包为 `dist/ZooCode-3.94.0-line-navigation.zip`，与文档开头记录的原始 ZIP 分开保存；开头的原始文件大小和哈希不适用于本包。安装后需要重启 IDEA 才会加载新的插件代码。
+
+验证命令（在 `jetbrains_plugin` 目录执行，先设置有效的 JDK 17）：
+
+```powershell
+.\gradlew.bat test --tests '*EditorNavigationTest' --tests '*EditorFocusIntentTest' --offline
+```
+
+手工验收：点击同一文件中的两个不同行号链接，分别在文件关闭和已经打开的情况下确认光标及视口定位；不带行号的文件链接应继续正常打开。
+
 ## 3. 新电脑直接安装
 
 ### 3.1 前置条件

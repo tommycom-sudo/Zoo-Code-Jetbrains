@@ -13,6 +13,9 @@ import org.zoocode.jetbrains.editor.EditorAndDocManager
 import org.zoocode.jetbrains.editor.Range
 import org.zoocode.jetbrains.editor.createURI
 import org.zoocode.jetbrains.editor.decodePreserveFocus
+import org.zoocode.jetbrains.editor.decodeEditorRange
+import org.zoocode.jetbrains.editor.decodeEditorSelection
+import org.zoocode.jetbrains.editor.Selection
 import kotlinx.coroutines.delay
 import java.io.File
 
@@ -144,6 +147,11 @@ class MainThreadTextEditors(var project: Project) : MainThreadTextEditorsShape {
         vfs.refreshIoFiles(listOf(File(path)))
         val resourceURI = createURI(resource)
         val editorHandle = project.getService(EditorAndDocManager::class.java).openEditor(resourceURI, preserveFocus)
+        decodeEditorRange((options as? Map<*, *>)?.get("selection"))?.let { range ->
+            editorHandle.setSelections(listOf(Selection(
+                range.startLineNumber, range.startColumn, range.endLineNumber, range.endColumn
+            )), reveal = true)
+        }
         logger.info("Trying to show text document: execution completed")
         return editorHandle.id
     }
@@ -201,6 +209,8 @@ class MainThreadTextEditors(var project: Project) : MainThreadTextEditorsShape {
 
     override fun trySetSelections(id: String, selections: List<Any>): Any {
         logger.info("Try to set selections: id=$id, selections=$selections")
+        project.getService(EditorAndDocManager::class.java).getEditorHandleById(id)
+            ?.setSelections(selections.mapNotNull(::decodeEditorSelection))
         return Unit
     }
 

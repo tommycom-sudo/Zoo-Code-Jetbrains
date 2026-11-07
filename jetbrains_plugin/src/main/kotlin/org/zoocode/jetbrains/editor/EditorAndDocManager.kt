@@ -235,8 +235,10 @@ class EditorAndDocManager(val project: Project) : Disposable {
             }
         }
         val eh = getEditorHandleByUri(documentUri,false)
-        if (eh != null)
+        if (eh != null) {
+            ideaEditor?.firstOrNull()?.let { eh.ideaEditor = it }
             return eh
+        }
         val handle = sync2ExtHost(documentUri, false, true, options)
         ideaEditor?.let {
             if(it.isNotEmpty()){
