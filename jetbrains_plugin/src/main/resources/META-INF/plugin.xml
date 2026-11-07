@@ -141,6 +141,10 @@ SPDX-License-Identifier: Apache-2.0
                     anchor="right" />
         <notificationGroup id="Zoo Code JetBrains"
                            displayType="BALLOON"/>
+        <applicationConfigurable
+                parentId="tools"
+                id="org.zoocode.jetbrains.selection.SelectionPopupConfigurable"
+                instance="org.zoocode.jetbrains.selection.SelectionPopupConfigurable"/>
     </extensions>
 
     <extensions defaultExtensionNs="org.jetbrains.plugins.terminal">
@@ -148,6 +152,13 @@ SPDX-License-Identifier: Apache-2.0
     </extensions>
 
     <actions>
+        <action id="ZooCode.AddSelectionToContext"
+                class="org.zoocode.jetbrains.selection.AddSelectionToContextAction"
+                text="Add Selection to Zoo Code"
+                description="Add the selected editor text to the Zoo Code conversation">
+            <add-to-group group-id="ToolsMenu" anchor="last"/>
+        </action>
+
         <!-- Dynamic toolbar group - buttons will be populated based on current extension -->
         <group id="WecoderToolbarGroup">
             <group id="ZooCodeJetBrains.DynamicExtensionActions"

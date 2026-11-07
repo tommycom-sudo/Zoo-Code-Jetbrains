@@ -101,6 +101,17 @@ class ExtensionUnixDomainSocketServer : ISocketServer {
     }
 
     override fun isRunning(): Boolean = isRunning
+
+    override fun expectDisconnect() {
+        clientManagers.values.forEach { manager ->
+            try {
+                manager.expectDisconnect()
+            } catch (e: Exception) {
+                logger.warn("[UDS] Failed to mark client manager for expected disconnect", e)
+            }
+        }
+    }
+
     override fun dispose() {
         stop()
     }

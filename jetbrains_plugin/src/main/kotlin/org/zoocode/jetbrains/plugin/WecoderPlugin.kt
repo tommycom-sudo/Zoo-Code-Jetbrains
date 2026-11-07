@@ -8,6 +8,7 @@ import java.nio.file.Files
 import java.nio.file.StandardCopyOption
 
 import com.intellij.openapi.components.Service
+import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.startup.StartupActivity
@@ -32,6 +33,7 @@ import org.zoocode.jetbrains.util.JcefSupport
 import org.zoocode.jetbrains.util.PluginConstants
 import org.zoocode.jetbrains.util.PluginInfo
 import org.zoocode.jetbrains.util.PluginResourceUtil
+import org.zoocode.jetbrains.selection.ZooCodeSelectionPopupService
 import java.io.File
 
 /**
@@ -60,6 +62,12 @@ class WecoderPlugin : StartupActivity.DumbAware {
     }
 
     override fun runActivity(project: Project) {
+        ApplicationManager.getApplication().invokeLater {
+            if (!project.isDisposed) {
+                ZooCodeSelectionPopupService.getInstance(project).initialize()
+            }
+        }
+
         val appInfo = ApplicationInfo.getInstance()
         val pluginVersion = PluginInfo.version
         val osName = System.getProperty("os.name")
@@ -457,6 +465,12 @@ class WecoderPluginService(private var currentProject: Project) : Disposable {
      */
     private fun cleanup() {
         try {
+            // The extension process is terminated before its socket is disposed.
+            // Mark active sockets first so their expected connection reset is not
+            // reported as an IDE error during normal shutdown.
+            socketServer.expectDisconnect()
+            udsSocketServer.expectDisconnect()
+
             // Stop extension process, only needed in non-debug mode
             if (DEBUG_TYPE == org.zoocode.jetbrains.plugin.DEBUG_MODE.NONE) {
                 processManager.stop()

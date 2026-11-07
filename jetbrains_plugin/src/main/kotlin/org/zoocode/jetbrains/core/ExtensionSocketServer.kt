@@ -20,6 +20,7 @@ import kotlin.concurrent.thread
 interface ISocketServer : Disposable {
     fun start(projectPath: String = ""): Any?
     fun stop()
+    fun expectDisconnect()
     fun isRunning(): Boolean
 }
 
@@ -117,6 +118,16 @@ class ExtensionSocketServer() : ISocketServer {
         serverSocket = null
         
         logger.info("Socket server stopped")
+    }
+
+    override fun expectDisconnect() {
+        clientManagers.values.forEach { manager ->
+            try {
+                manager.expectDisconnect()
+            } catch (e: Exception) {
+                logger.warn("Failed to mark client manager for expected disconnect", e)
+            }
+        }
     }
     
     /**
@@ -310,4 +321,4 @@ class ExtensionSocketServer() : ISocketServer {
             return false
         }
     }
-} 
+}

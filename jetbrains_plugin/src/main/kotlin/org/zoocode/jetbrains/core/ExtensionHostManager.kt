@@ -173,6 +173,15 @@ class ExtensionHostManager : Disposable {
         }
         return rpcManager?.getRPCProtocol()?.responsiveState
     }
+
+    /**
+     * Marks the socket for an expected disconnect before the extension process is
+     * stopped. Process termination happens before the socket is disposed during
+     * normal IDE shutdown.
+     */
+    fun expectDisconnect() {
+        nodeSocket.expectClose()
+    }
     
     /**
      * Handle messages from the extension process.
@@ -442,6 +451,7 @@ class ExtensionHostManager : Disposable {
      */
     override fun dispose() {
         LOG.info("Disposing ExtensionHostManager")
+        nodeSocket.expectClose()
         
         // Cancel coroutines
         coroutineScope.cancel()

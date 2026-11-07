@@ -28,6 +28,7 @@ class NodeSocket : ISocket {
     private val canWrite = AtomicBoolean(true)
     private var receiveThread: Thread? = null
     private val isDisposed = AtomicBoolean(false)
+    private val isCloseExpected = AtomicBoolean(false)
     private var endTimeoutHandle: Thread? = null
     private val socketEndTimeoutMs = 30_000L // 30 second timeout
     private val debugLabel: String
@@ -99,10 +100,14 @@ class NodeSocket : ISocket {
                             }
                         }
                     } catch (e: IOException) {
-                        if (!isDisposed.get()) {
-                            // Only report errors when socket is not actively closed
+                        if (!isPeerDisconnectExpected()) {
                             logger.error("Socket[$debugLabel] IO exception occurred while reading data", e)
                             handleSocketError(e)
+                        } else {
+                            logger.debug(
+                                "Socket[$debugLabel] Peer disconnected during expected shutdown",
+                                e
+                            )
                         }
                         break
                     }
@@ -297,7 +302,23 @@ class NodeSocket : ISocket {
         }
     }
 
+    /**
+     * Marks an upcoming peer disconnect as expected.
+     *
+     * The extension process is stopped before its socket is disposed during IDE
+     * shutdown. Without this flag, the process exiting first is reported as an
+     * unexpected connection reset even though it is part of a normal shutdown.
+     */
+    fun expectClose() {
+        isCloseExpected.set(true)
+    }
+
+    internal fun isPeerDisconnectExpected(): Boolean {
+        return isCloseExpected.get() || isDisposed.get() || isClosed()
+    }
+
     override fun dispose() {
+        expectClose()
         if (isDisposed.getAndSet(true)) {
             return
         }
@@ -354,4 +375,4 @@ class NodeSocket : ISocket {
     }
 
     fun isDisposed(): Boolean = isDisposed.get()
-} 
+}

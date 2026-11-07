@@ -75,6 +75,40 @@ This directory contains the build and maintenance scripts for the Zoo Code JetBr
 ./scripts/build.sh --output ./dist
 ```
 
+### Reuse prebuilt Extension Host dependencies
+
+Windows builds of `node-pty` require Visual Studio C++ Build Tools and a
+supported Python version. If a ZooCode JetBrains plugin is already installed,
+its prebuilt native dependencies and Extension Host runtime can be reused:
+
+```bash
+./scripts/build.sh --reuse-installed-plugin
+```
+
+This mode skips `node-gyp`, `npm install`, Extension Host TypeScript
+compilation, and the `deps/vscode` submodule requirement. It should be used when
+`extension_host/` JavaScript sources have not been modified.
+
+Set `ZOO_EXTENSION_VERSION` to the same version as the installed plugin. The
+reused runtime, native dependencies, and downloaded Zoo Code agent should belong
+to one compatible release.
+
+Reuse a specific dependency directory:
+
+```bash
+./scripts/build.sh --reuse-node-modules "/path/to/ZooCode/node_modules"
+```
+
+The explicit directory mode reuses native modules and installs missing
+JavaScript development tools with `npm install --ignore-scripts`. It still
+compiles `extension_host/` and therefore requires the VSCode submodule.
+
+The environment variable `ZOO_REUSE_NODE_MODULES` is also supported:
+
+```bash
+ZOO_REUSE_NODE_MODULES="/path/to/ZooCode/node_modules" ./scripts/build.sh
+```
+
 ### Testing
 ```bash
 # Run all tests

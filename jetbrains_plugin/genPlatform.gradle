@@ -5,6 +5,44 @@
 import java.nio.file.*
 import java.security.MessageDigest
 
+def downloadFile(Project project, String url, File target) {
+    if (target.exists()) {
+        return
+    }
+
+    def partial = new File(target.parentFile, "${target.name}.part")
+    partial.delete()
+
+    def result = project.exec {
+        commandLine(
+            "curl",
+            "-fL",
+            "--retry", "3",
+            "--retry-delay", "2",
+            "--connect-timeout", "30",
+            "--max-time", "900",
+            "-o", partial.absolutePath,
+            url,
+        )
+        ignoreExitValue = true
+    }
+
+    if (result.exitValue != 0 || !partial.isFile() || partial.length() == 0) {
+        partial.delete()
+        throw new GradleException(
+            "Failed to download platform archive from ${url} " +
+                "(curl exit code ${result.exitValue})",
+        )
+    }
+
+    Files.move(
+        partial.toPath(),
+        target.toPath(),
+        StandardCopyOption.REPLACE_EXISTING,
+        StandardCopyOption.ATOMIC_MOVE,
+    )
+}
+
 
 // Prepare sources in an action, before Zip checks for source files.
 def preparePlatform = tasks.register('preparePlatform') {
@@ -36,11 +74,7 @@ def download(Project project){
     projectBuild.mkdirs();
     println "Downloading Windows platform files"
     def windowsZipFile = new File(projectBuild,"windows-x64.zip")
-    if (!windowsZipFile.exists()) {
-        windowsZipFile << new URL(windows_x64).openStream()
-    } else {
-        println "Windows platform file already exists, skipping download"
-    }
+    downloadFile(project, windows_x64, windowsZipFile)
 
     def windowsDir = new File(projectBuild, "windows-x64")
     copy {
@@ -52,11 +86,7 @@ def download(Project project){
 
     println "Downloading Mac x64 platform files"
     def macX64ZipFile = new File(projectBuild,"darwin-x64.zip")
-    if (!macX64ZipFile.exists()) {
-        macX64ZipFile << new URL(mac_x64).openStream()
-    } else {
-        println "Mac x64 platform file already exists, skipping download"
-    }
+    downloadFile(project, mac_x64, macX64ZipFile)
 
     def macX64Dir = new File(projectBuild, "darwin-x64")
     copy {
@@ -68,11 +98,7 @@ def download(Project project){
 
     println "Downloading Mac arm64 platform files"
     def macArm64ZipFile = new File(projectBuild,"darwin-arm64.zip")
-    if (!macArm64ZipFile.exists()) {
-        macArm64ZipFile << new URL(mac_arm64).openStream()
-    } else {
-        println "Mac arm64 platform file already exists, skipping download"
-    }
+    downloadFile(project, mac_arm64, macArm64ZipFile)
 
     def macArm64Dir = new File(projectBuild, "darwin-arm64")
     copy {
@@ -84,11 +110,7 @@ def download(Project project){
 
     println "Downloading Linux x64 platform files"
     def linuxZipFile = new File(projectBuild,"linux-x64.zip")
-    if (!linuxZipFile.exists()) {
-        linuxZipFile << new URL(linux_x64).openStream()
-    } else {
-        println "Linux x64 platform file already exists, skipping download"
-    }
+    downloadFile(project, linux_x64, linuxZipFile)
 
     def linuxDir = new File(projectBuild, "linux-x64")
     copy {

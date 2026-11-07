@@ -26,6 +26,9 @@ SKIP_DOWNLOAD=false
 SKIP_EXTENSION_HOST_BUILD=false
 SKIP_IDEA_BUILD=false
 CLEAN_BUILD=false
+REUSE_INSTALLED_PLUGIN=false
+REUSE_NODE_MODULES_DIR="${ZOO_REUSE_NODE_MODULES:-}"
+REUSE_PREBUILT_HOST_RUNTIME=""
 
 # Show help for this script
 show_help() {
@@ -50,6 +53,10 @@ OPTIONS:
     --skip-download         Skip downloading Zoo Code (use existing)
     --skip-host             Skip Extension Host build
     --skip-idea             Skip IDEA plugin build
+    --reuse-installed-plugin
+                            Reuse runtime and native dependencies from the installed plugin
+    --reuse-node-modules DIR
+                            Reuse prebuilt native node_modules from a directory
     -v, --verbose           Enable verbose output
     -n, --dry-run           Show what would be done without executing
     -h, --help              Show this help message
@@ -59,6 +66,8 @@ EXAMPLES:
     $SCRIPT_NAME --mode debug           # Debug build
     $SCRIPT_NAME --output ./dist        # Custom output directory
     $SCRIPT_NAME --clean                # Clean build from scratch
+    $SCRIPT_NAME --reuse-installed-plugin
+    $SCRIPT_NAME --reuse-node-modules "/path/to/node_modules"
 
 OUTPUT:
     The script creates a complete build in the output directory with:
@@ -113,6 +122,18 @@ parse_args() {
                 SKIP_IDEA_BUILD=true
                 shift
                 ;;
+            --reuse-installed-plugin)
+                REUSE_INSTALLED_PLUGIN=true
+                shift
+                ;;
+            --reuse-node-modules)
+                if [[ -z "${2:-}" ]]; then
+                    log_error "Reused node_modules directory requires a value"
+                    exit 3
+                fi
+                REUSE_NODE_MODULES_DIR="$2"
+                shift 2
+                ;;
             -v|--verbose)
                 VERBOSE=true
                 shift
@@ -142,6 +163,11 @@ parse_args() {
     if [[ "$BUILD_MODE" != "release" && "$BUILD_MODE" != "debug" ]]; then
         log_error "Invalid build mode: $BUILD_MODE"
         log_info "Valid modes: release, debug"
+        exit 3
+    fi
+
+    if [[ "$REUSE_INSTALLED_PLUGIN" == "true" && -n "$REUSE_NODE_MODULES_DIR" ]]; then
+        log_error "Use only one of --reuse-installed-plugin or --reuse-node-modules"
         exit 3
     fi
 }
@@ -314,6 +340,222 @@ check_requirements() {
     log_success "All requirements met"
 }
 
+# Convert a Windows path supplied from PowerShell to a Git Bash path when possible.
+normalize_windows_path() {
+    local path_value="$1"
+
+    if command_exists "cygpath" && [[ "$path_value" =~ ^[A-Za-z]:[\\/] ]]; then
+        cygpath -u "$path_value"
+    else
+        printf '%s\n' "$path_value"
+    fi
+}
+
+# Detect node_modules bundled with an installed JetBrains ZooCode plugin.
+detect_installed_plugin_node_modules() {
+    local candidate
+    local root
+    local roots=()
+
+    if [[ -n "${LOCALAPPDATA:-}" ]]; then
+        roots+=("$(normalize_windows_path "$LOCALAPPDATA")/JetBrains")
+    fi
+    if [[ -n "${APPDATA:-}" ]]; then
+        roots+=("$(normalize_windows_path "$APPDATA")/JetBrains")
+    fi
+    if [[ -n "${HOME:-}" ]]; then
+        case "$(uname -s)" in
+            Darwin)
+                roots+=("$HOME/Library/Application Support/JetBrains")
+                ;;
+            Linux)
+                roots+=("$HOME/.local/share/JetBrains")
+                ;;
+        esac
+    fi
+
+    for root in "${roots[@]}"; do
+        [[ -d "$root" ]] || continue
+
+        while IFS= read -r candidate; do
+            if [[ -f "$candidate/node-pty/build/Release/pty.node" ]]; then
+                printf '%s\n' "$candidate"
+                return 0
+            fi
+        done < <(
+            find "$root" -maxdepth 5 -type d \
+                -path '*/plugins/ZooCode/node_modules' \
+                -print 2>/dev/null
+        )
+    done
+
+    return 1
+}
+
+# Validate and normalize the prebuilt dependency directory selected by the user.
+resolve_reused_node_modules() {
+    if [[ "$REUSE_INSTALLED_PLUGIN" == "true" ]]; then
+        REUSE_NODE_MODULES_DIR="$(detect_installed_plugin_node_modules || true)"
+
+        if [[ -z "$REUSE_NODE_MODULES_DIR" ]]; then
+            log_error "Could not find an installed ZooCode plugin with prebuilt node_modules"
+            log_info "Pass --reuse-node-modules <directory> instead"
+            exit 4
+        fi
+
+        log_info "Detected installed ZooCode dependencies: $REUSE_NODE_MODULES_DIR"
+    fi
+
+    if [[ -z "$REUSE_NODE_MODULES_DIR" ]]; then
+        return 0
+    fi
+
+    REUSE_NODE_MODULES_DIR="$(normalize_windows_path "$REUSE_NODE_MODULES_DIR")"
+
+    if [[ ! -d "$REUSE_NODE_MODULES_DIR" ]]; then
+        log_error "Reused node_modules directory does not exist: $REUSE_NODE_MODULES_DIR"
+        exit 4
+    fi
+
+    if [[ ! -f "$REUSE_NODE_MODULES_DIR/node-pty/build/Release/pty.node" ]]; then
+        log_error "Reused dependencies do not contain a prebuilt node-pty native module"
+        log_info "Expected: $REUSE_NODE_MODULES_DIR/node-pty/build/Release/pty.node"
+        exit 4
+    fi
+
+    REUSE_NODE_MODULES_DIR="$(cd "$REUSE_NODE_MODULES_DIR" && pwd)"
+    log_success "Using prebuilt dependencies from: $REUSE_NODE_MODULES_DIR"
+
+    if [[ "$REUSE_INSTALLED_PLUGIN" == "true" ]]; then
+        local plugin_root="${REUSE_NODE_MODULES_DIR%/node_modules}"
+        if [[ -f "$plugin_root/runtime/extension.js" ]]; then
+            REUSE_PREBUILT_HOST_RUNTIME="$plugin_root/runtime"
+            log_success "Using prebuilt Extension Host runtime from: $REUSE_PREBUILT_HOST_RUNTIME"
+        else
+            log_warn "Installed plugin has no prebuilt runtime; Extension Host source will be compiled"
+        fi
+    fi
+}
+
+# Copy prebuilt dependencies into extension_host and install only missing JS tools.
+prepare_reused_node_modules() {
+    [[ -n "$REUSE_NODE_MODULES_DIR" ]] || return 0
+
+    local target_dir="$PROJECT_ROOT/extension_host/node_modules"
+    local target_abs=""
+
+    if [[ -d "$target_dir" ]]; then
+        target_abs="$(cd "$target_dir" && pwd)"
+    fi
+
+    if [[ "$target_abs" == "$REUSE_NODE_MODULES_DIR" ]]; then
+        log_info "Extension Host already uses the selected prebuilt dependencies"
+        return 0
+    fi
+
+    log_step "Reusing prebuilt Extension Host dependencies..."
+
+    if [[ "$DRY_RUN" == "true" ]]; then
+        log_info "[DRY RUN] Would replace $target_dir with $REUSE_NODE_MODULES_DIR"
+        return 0
+    fi
+
+    remove_dir "$target_dir"
+    ensure_dir "$target_dir"
+    execute_cmd \
+        "cp -a '$REUSE_NODE_MODULES_DIR/.' '$target_dir/'" \
+        "prebuilt Extension Host dependency copy"
+
+    # Marketplace plugin bundles include runtime dependencies but not tsc/tsup.
+    # Install missing development tools with lifecycle scripts disabled so node-gyp
+    # is not invoked and the copied native modules remain untouched.
+    if [[ -z "$REUSE_PREBUILT_HOST_RUNTIME" &&
+        ( ! -e "$target_dir/.bin/tsc" || ! -e "$target_dir/.bin/tsup" )
+    ]]; then
+        log_info "Installing missing JavaScript build tools without native scripts..."
+        execute_cmd \
+            "npm install --ignore-scripts --no-audit --no-fund" \
+            "Extension Host JavaScript dependency installation"
+    fi
+
+    # npm can prune a prebuilt package even with scripts disabled. Restore the
+    # node-pty package from the reusable source before validating the build.
+    if [[ ! -f "$target_dir/node-pty/build/Release/pty.node" ]]; then
+        log_info "Restoring prebuilt node-pty package after dependency resolution..."
+        remove_dir "$target_dir/node-pty"
+        execute_cmd \
+            "cp -a '$REUSE_NODE_MODULES_DIR/node-pty' '$target_dir/'" \
+            "prebuilt node-pty restore"
+    fi
+
+    if [[ ! -f "$target_dir/node-pty/build/Release/pty.node" ]]; then
+        log_error "Prebuilt node-pty native module is still missing after dependency resolution"
+        exit 4
+    fi
+
+    log_success "Prebuilt Extension Host dependencies installed"
+}
+
+# Copy the Extension Host runtime bundled with the installed ZooCode plugin.
+prepare_reused_extension_host_runtime() {
+    [[ -n "$REUSE_PREBUILT_HOST_RUNTIME" ]] || return 1
+
+    local target_dir="$PROJECT_ROOT/extension_host/dist"
+
+    if [[ ! -f "$REUSE_PREBUILT_HOST_RUNTIME/extension.js" ]]; then
+        log_warn "Prebuilt Extension Host runtime is missing extension.js"
+        return 1
+    fi
+
+    log_step "Reusing prebuilt Extension Host runtime..."
+
+    if [[ "$DRY_RUN" == "true" ]]; then
+        log_info "[DRY RUN] Would copy $REUSE_PREBUILT_HOST_RUNTIME to $target_dir"
+        return 0
+    fi
+
+    remove_dir "$target_dir"
+    ensure_dir "$target_dir"
+    execute_cmd \
+        "cp -a '$REUSE_PREBUILT_HOST_RUNTIME/.' '$target_dir/'" \
+        "prebuilt Extension Host runtime copy"
+
+    if [[ ! -f "$target_dir/extension.js" ]]; then
+        log_error "Prebuilt Extension Host runtime copy is incomplete"
+        exit 4
+    fi
+
+    log_warn "Using the installed plugin's Extension Host runtime; extension_host TypeScript changes are not rebuilt in this mode"
+    log_success "Prebuilt Extension Host runtime installed"
+    return 0
+}
+
+# Remove incomplete platform downloads left by an interrupted Gradle process.
+invalidate_corrupt_platform_cache() {
+    local cache_dir="$IDEA_BUILD_DIR/build/genPlatform"
+    local archive
+
+    [[ -d "$cache_dir" ]] || return 0
+
+    for archive in windows-x64.zip darwin-x64.zip darwin-arm64.zip; do
+        local archive_path="$cache_dir/$archive"
+        [[ -f "$archive_path" ]] || continue
+
+        if ! unzip -t "$archive_path" >/dev/null 2>&1; then
+            log_warn "Removing corrupt platform archive: $archive_path"
+            rm -f "$archive_path"
+            remove_dir "$cache_dir/${archive%.zip}"
+        fi
+    done
+
+    archive="$cache_dir/linux-x64.zip"
+    if [[ -f "$archive" ]] && ! gzip -t "$archive" >/dev/null 2>&1; then
+        log_warn "Removing corrupt platform archive: $archive"
+        rm -f "$archive"
+        remove_dir "$cache_dir/linux-x64"
+    fi
+}
+
 # Clean build artifacts
 clean_build_artifacts() {
     if [[ "$CLEAN_BUILD" != "true" ]]; then
@@ -475,20 +717,30 @@ build_extension_host_component() {
     
     cd "$PROJECT_ROOT/extension_host"
     
-    # Install dependencies
-    log_info "Installing Extension Host dependencies..."
-    execute_cmd "npm install" "Extension Host dependency installation"
-    
-    # Build
-    if [[ "$BUILD_MODE" == "debug" ]]; then
-        execute_cmd "npm run build" "Extension Host build (debug)"
+    if [[ -n "$REUSE_NODE_MODULES_DIR" ]]; then
+        prepare_reused_node_modules
     else
-        execute_cmd "npm run build:extension" "Extension Host build (release)"
+        # Install dependencies
+        log_info "Installing Extension Host dependencies..."
+        execute_cmd "npm install" "Extension Host dependency installation"
+    fi
+    
+    if prepare_reused_extension_host_runtime; then
+        log_info "Skipping Extension Host TypeScript compilation in prebuilt runtime mode"
+    else
+        # Build
+        if [[ "$BUILD_MODE" == "debug" ]]; then
+            execute_cmd "npm run build" "Extension Host build (debug)"
+        else
+            execute_cmd "npm run build:extension" "Extension Host build (release)"
+        fi
     fi
     
     # Generate production dependencies list for IDEA plugin build
     log_info "Generating production dependencies list..."
-    execute_cmd "npm ls --prod --depth=10 --parseable > '$IDEA_BUILD_DIR/prodDep.txt'" "production dependencies list"
+    execute_cmd \
+        "npm ls --package-lock-only --omit=dev --depth=10 --parseable > '$IDEA_BUILD_DIR/prodDep.txt'" \
+        "production dependencies list"
     
     # Copy to output
     local host_output="$EXTENSION_OUTPUT_DIR/extension_host"
@@ -529,6 +781,11 @@ build_idea_with_zoo() {
         gradle_cmd="./gradlew"
         chmod +x "./gradlew"
     fi
+
+    # Release daemons before inspecting generated platform archives. A daemon
+    # from an interrupted build can keep a partially downloaded ZIP open.
+    "$gradle_cmd" --stop >/dev/null 2>&1 || true
+    invalidate_corrupt_platform_cache
     
     # Set build mode
     local debug_mode="release"
@@ -536,9 +793,40 @@ build_idea_with_zoo() {
         debug_mode="idea"
     fi
     
-    # Clean build directory to ensure fresh build with new version
-    log_info "Cleaning build directory for fresh build..."
-    execute_cmd "$gradle_cmd clean" "clean build directory"
+    # A forced clean is optional. On Windows, Gradle daemons and antivirus/indexers
+    # can briefly lock generated platform archives, causing `:clean` to fail even
+    # though Gradle can correctly rebuild changed tasks incrementally.
+    if [[ "$CLEAN_BUILD" == "true" ]]; then
+        log_info "Cleaning IDEA plugin build directory..."
+        local clean_succeeded=false
+
+        if [[ "$VERBOSE" == "true" ]]; then
+            "$gradle_cmd" clean && clean_succeeded=true
+        else
+            "$gradle_cmd" clean >/dev/null && clean_succeeded=true
+        fi
+
+        if [[ "$clean_succeeded" != "true" ]]; then
+            log_warn "Gradle clean failed; stopping Gradle daemons and retrying once..."
+            "$gradle_cmd" --stop >/dev/null 2>&1 || true
+            sleep 2
+
+            if [[ "$VERBOSE" == "true" ]]; then
+                "$gradle_cmd" clean && clean_succeeded=true
+            else
+                "$gradle_cmd" clean >/dev/null && clean_succeeded=true
+            fi
+        fi
+
+        if [[ "$clean_succeeded" == "true" ]]; then
+            log_success "IDEA plugin build directory cleaned"
+        else
+            log_warn "Unable to fully clean the IDEA build directory; continuing with incremental build"
+            log_info "Close any Gradle processes or exclude the build directory from antivirus scanning if the build fails"
+        fi
+    else
+        log_info "Skipping forced clean (pass --clean to request a full clean)"
+    fi
     
     # Build plugin
     log_info "Building IDEA plugin in $BUILD_MODE mode with version $ZOO_EXTENSION_VERSION..."
@@ -716,6 +1004,9 @@ main() {
     
     # Check requirements
     check_requirements
+
+    # Resolve prebuilt dependencies before any clean/build work begins
+    resolve_reused_node_modules
     
     # Get latest Zoo Code version
     get_latest_zoo_version

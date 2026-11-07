@@ -8,6 +8,8 @@ import com.intellij.openapi.actionSystem.AnAction
 import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.actionSystem.CommonDataKeys
 import com.intellij.openapi.diagnostic.Logger
+import com.intellij.openapi.editor.Editor
+import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.project.Project
 import org.zoocode.jetbrains.extensions.ui.contextmenu.ExtensionContextMenuProvider
 import org.zoocode.jetbrains.extensions.ui.contextmenu.ContextMenuConfiguration
@@ -169,18 +171,8 @@ class ZooCodeContextMenuProvider : ExtensionContextMenuProvider {
         override fun actionPerformed(e: AnActionEvent) {
             val project = e.project ?: return
             val editor = e.getData(CommonDataKeys.EDITOR) ?: return
-            val file = e.dataContext.getData(CommonDataKeys.VIRTUAL_FILE) ?: return
-            
-            val effectiveRange = ZooCodeContextMenuProvider.getEffectiveRange(editor)
-            if (effectiveRange == null) return
-            
-            val args = mutableMapOf<String, Any?>()
-            args["filePath"] = file.path
-            args["selectedText"] = effectiveRange.text
-            args["startLine"] = effectiveRange.startLine + 1
-            args["endLine"] = effectiveRange.endLine + 1
-            
-            ZooCodeContextMenuProvider.handleCodeAction("zoo-code.addToContext", "ADD_TO_CONTEXT", args, project)
+
+            ZooCodeContextMenuProvider.addSelectionToContext(project, editor)
         }
     }
 
@@ -245,6 +237,31 @@ class ZooCodeContextMenuProvider : ExtensionContextMenuProvider {
         }
 
         /**
+         * Adds the current editor selection to the active Zoo Code conversation.
+         *
+         * @return true when the selection was sent to a loaded Zoo Code webview
+         */
+        fun addSelectionToContext(project: Project, editor: Editor): Boolean {
+            val file = FileDocumentManager.getInstance().getFile(editor.document)
+                ?: return false
+            val effectiveRange = getEffectiveRange(editor) ?: return false
+
+            val args = mutableMapOf<String, Any?>(
+                "filePath" to file.path,
+                "selectedText" to effectiveRange.text,
+                "startLine" to effectiveRange.startLine + 1,
+                "endLine" to effectiveRange.endLine + 1,
+            )
+
+            return handleCodeAction(
+                "zoo-code.addToContext",
+                "ADD_TO_CONTEXT",
+                args,
+                project,
+            )
+        }
+
+        /**
          * Core logic for handling code actions.
          * Processes different types of commands and sends appropriate messages to the webview.
          *
@@ -262,10 +279,15 @@ class ZooCodeContextMenuProvider : ExtensionContextMenuProvider {
          * @param params Parameters for the action (can be Map or List)
          * @param project The current project
          */
-        fun handleCodeAction(command: String, promptType: String, params: Any, project: Project?) {
+        fun handleCodeAction(
+            command: String,
+            promptType: String,
+            params: Any,
+            project: Project?,
+        ): Boolean {
             val latestWebView = project?.getService(WebViewManager::class.java)?.getLatestWebView()
             if (latestWebView == null) {
-                return
+                return false
             }
 
             // Create message content based on command type
@@ -333,6 +355,7 @@ class ZooCodeContextMenuProvider : ExtensionContextMenuProvider {
             // Convert to JSON and send
             val messageJson = com.google.gson.Gson().toJson(messageContent)
             latestWebView.postMessageToWebView(messageJson)
+            return true
         }
 
         /**

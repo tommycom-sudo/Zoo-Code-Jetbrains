@@ -168,6 +168,62 @@ The build script then:
 ./scripts/build.sh --help
 ```
 
+#### Reuse an installed plugin's prebuilt runtime
+
+On Windows machines without Visual Studio C++ Build Tools, `npm install` may
+fail while compiling `node-pty` with `node-gyp`. The build can reuse the
+Extension Host runtime and native dependencies already bundled with an installed
+`ZooCode` JetBrains plugin:
+
+```bash
+./scripts/build.sh --reuse-installed-plugin
+```
+
+The script automatically searches JetBrains IDE plugin directories for:
+
+```text
+plugins/ZooCode/node_modules
+plugins/ZooCode/runtime
+```
+
+This mode:
+
+- Copies the prebuilt `node_modules`, including `node-pty`.
+- Copies `runtime/extension.js` into `extension_host/dist`.
+- Skips `npm install` and Extension Host TypeScript compilation.
+- Does not require Visual Studio C++ Build Tools or the `deps/vscode` submodule.
+
+It is intended for building the JetBrains plugin when Extension Host JavaScript
+sources have not changed. If you changed `extension_host/`, initialize the
+`deps/vscode` submodule and compile the host normally.
+
+Pin `ZOO_EXTENSION_VERSION` to the version of the installed plugin whose runtime
+and dependencies are being reused. Mixing a prebuilt host with a different Zoo
+Code agent version can cause protocol mismatches.
+
+To use a specific prebuilt dependency directory:
+
+```bash
+./scripts/build.sh \
+  --reuse-node-modules "/path/to/ZooCode/node_modules"
+```
+
+The explicit `--reuse-node-modules` mode copies native dependencies, installs
+only missing JavaScript tools with lifecycle scripts disabled, and still
+compiles the Extension Host TypeScript sources.
+
+The prebuilt native modules in the installed JetBrains plugin are built for its
+managed Node.js runtime (currently Node.js 20). When invoking the Bash script
+from PowerShell, put that runtime first on `PATH`:
+
+```powershell
+$node = "C:\Users\<user>\AppData\Local\JetBrains\IntelliJIdea<version>\zoocode-node\node-v20.19.2-win-x64"
+$env:PATH = "$node;$env:PATH"
+
+& "C:\Program Files\Git\bin\bash.exe" -lc `
+  "./scripts/build.sh --reuse-installed-plugin --mode release"
+```
+
 ### Build output
 
 After a full build, the output directory contains:
